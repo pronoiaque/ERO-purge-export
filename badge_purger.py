@@ -287,13 +287,23 @@ class BadgePurger:
 
                 # Distribution by badge count (triplon, quadruplon, ...)
                 count_distribution = defaultdict(int)
+                matricules_by_count = defaultdict(list)
                 for matricule, records in self.stats['duplicates_by_matricule'].items():
                     nb_badges = len(set(r['badge'] for r in records))
                     count_distribution[nb_badges] += 1
+                    matricules_by_count[nb_badges].append(matricule)
+
                 f.write("Repartition par nombre de badges:\r\n")
                 for nb_badges in sorted(count_distribution):
                     label = {3: "triplon", 4: "quadruplon"}.get(nb_badges, f"{nb_badges} badges")
-                    f.write(f"  - {nb_badges} badges ({label}): {count_distribution[nb_badges]} matricule(s)\r\n")
+                    count = count_distribution[nb_badges]
+                    f.write(f"  - {nb_badges} badges ({label}): {count} matricule(s)")
+
+                    # If rare (1 or 2 occurrences), show the matricule(s)
+                    if count <= 2:
+                        matricule_list = matricules_by_count[nb_badges]
+                        f.write(f" {{{', '.join(matricule_list)}}}")
+                    f.write("\r\n")
                 f.write("\r\n")
 
                 # List all duplicates by matricule
