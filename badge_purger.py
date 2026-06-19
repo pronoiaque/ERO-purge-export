@@ -161,7 +161,7 @@ class BadgePurger:
             writer = csv.writer(f, delimiter=';', lineterminator='\r\n')
             for _, fields in sorted(self.valid_records):
                 writer.writerow(fields)
-        print(f"✓ Valid records: {valid_file}")
+        print(f"[OK] Valid records: {valid_file}")
 
         # Write duplicate records
         duplicate_file = self.output_dir / 'badges_doublons.csv'
@@ -169,18 +169,18 @@ class BadgePurger:
             writer = csv.writer(f, delimiter=';', lineterminator='\r\n')
             for _, fields in sorted(self.duplicate_records):
                 writer.writerow(fields)
-        print(f"✓ Duplicate records: {duplicate_file}")
+        print(f"[OK] Duplicate records: {duplicate_file}")
 
         # Write error records
         error_file = self.output_dir / 'badges_erreurs.csv'
         with open(error_file, 'w', encoding='cp1252', newline='') as f:
             writer = csv.writer(f, delimiter=';', lineterminator='\r\n')
             # Write header with error message
-            f.write("# Ligne;N°Badge;Nom;Prenom;Matricule;Catégorie;Immatriculation;N°Cat;ERREUR\r\n")
+            f.write("# Ligne;N°Badge;Nom;Prenom;Matricule;Categorie;Immatriculation;N°Cat;ERREUR\r\n")
             for line_num, fields, error_msg in sorted(self.error_records):
                 row = [str(line_num)] + fields + [error_msg]
                 writer.writerow(row)
-        print(f"✓ Error records: {error_file}")
+        print(f"[OK] Error records: {error_file}")
 
     def write_report(self):
         """Generate and write the processing report."""
@@ -227,11 +227,11 @@ class BadgePurger:
                     f.write(f"  - {error_type}: {count}\r\n")
                 f.write("\r\n")
 
-            f.write("FICHIERS GÉNÉRÉS\r\n")
+            f.write("FICHIERS GENERES\r\n")
             f.write("-" * 70 + "\r\n")
-            f.write(f"✓ badges_valides.csv ({self.stats['valid_lines']} lignes)\r\n")
-            f.write(f"✓ badges_doublons.csv ({self.stats['duplicate_lines']} lignes)\r\n")
-            f.write(f"✓ badges_erreurs.csv ({self.stats['error_lines']} lignes)\r\n")
+            f.write(f"[OK] badges_valides.csv ({self.stats['valid_lines']} lignes)\r\n")
+            f.write(f"[OK] badges_doublons.csv ({self.stats['duplicate_lines']} lignes)\r\n")
+            f.write(f"[OK] badges_erreurs.csv ({self.stats['error_lines']} lignes)\r\n")
 
         print(f"✓ Rapport: {report_file}")
 
@@ -243,7 +243,7 @@ class BadgePurger:
             self.write_report()
 
             print("\n" + "=" * 70)
-            print("PURGE COMPLÉTÉE")
+            print("PURGE COMPLETEE")
             print("=" * 70)
             print(f"Lignes valides: {self.stats['valid_lines']:,}")
             print(f"Doublons: {self.stats['duplicate_lines']:,}")
