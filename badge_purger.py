@@ -3,11 +3,12 @@
 Badge Database Purger
 Removes duplicates and validates badge records from a CSV file.
 
-Input format: N°badge(8digits);Nom;Prenom;Matricule(8digits);Categorie(texte);Immatriculation(10digits);N°Cat(4digits)
+Input format: N°badge(8digits);Nom;Prenom;Matricule(8digits);Categorie(texte);Immatriculation(10digits);N°Cat(1-4digits)
 
 Output files:
 - badges_valides.csv: Valid records without duplicates
-- badges_doublons.csv: Records flagged as duplicates
+- badges_doublons.csv: Records flagged as duplicates (badge derived from immatriculation)
+- badges_sans_matricule.csv: Records with no matricule (vehicles, shared equipment)
 - badges_erreurs.csv: Records that failed validation
 - rapport_purge.txt: Processing statistics report
 """
@@ -29,52 +30,71 @@ class BadgePurger:
         # Statistics
         self.stats = {
             'total_lines': 0,
+            'header_lines': 0,
+            'separator_lines': 0,
             'valid_lines': 0,
             'duplicate_lines': 0,
+            'no_matricule_lines': 0,
             'error_lines': 0,
-            'duplicates_by_matricule': defaultdict(int)
+            'duplicates_by_badge': defaultdict(list)
         }
 
         # Data storage
         self.valid_records = []
         self.duplicate_records = []
+        self.no_matricule_records = []
         self.error_records = []
+
+    @staticmethod
+    def is_header_or_separator(fields):
+        """Check if line is header or separator line."""
+        if len(fields) == 0:
+            return True
+        if len(fields) == 1 and all(c == '-' for c in fields[0]):
+            return True
+        if len(fields) > 0 and 'badge' in fields[0].lower() and 'nom' in str(fields).lower():
+            return True
+        return False
 
     @staticmethod
     def validate_record(line_number, fields):
         """
         Validate a record against business rules.
 
-        Returns: (is_valid: bool, error_message: str or None)
+        Returns: (is_valid: bool, has_matricule: bool, error_message: str or None)
         """
         errors = []
 
         # Check field count
         if len(fields) != 7:
-            return False, f"Invalid field count: {len(fields)}, expected 7"
+            return False, True, f"Invalid field count: {len(fields)}, expected 7"
 
         badge_num, nom, prenom, matricule, categorie, immatriculation, num_cat = fields
+
+        # Check if matricule is empty (vehicle/equipment)
+        has_matricule = bool(matricule.strip())
 
         # Validate N° Badge (8 digits)
         if not re.match(r'^\d{8}$', badge_num):
             errors.append(f"N°Badge invalid: '{badge_num}' (must be 8 digits)")
 
-        # Validate N° Matricule (8 digits)
-        if not re.match(r'^\d{8}$', matricule):
-            errors.append(f"N°Matricule invalid: '{matricule}' (must be 8 digits)")
+        # N° Matricule validation: 8 digits IF present
+        if has_matricule and not re.match(r'^\d{8}$', matricule):
+            errors.append(f"N°Matricule invalid: '{matricule}' (must be 8 digits if present)")
 
         # Validate N° Immatriculation (NULL or 10 digits)
-        if immatriculation.strip() and not re.match(r'^\d{10}$', immatriculation):
-            errors.append(f"N°Immatriculation invalid: '{immatriculation}' (must be NULL or 10 digits)")
+        immat_clean = immatriculation.strip()
+        if immat_clean and immat_clean.lower() != '<vide>' and not re.match(r'^\d{10}$', immat_clean):
+            errors.append(f"N°Immatriculation invalid: '{immat_clean}' (must be NULL or 10 digits)")
 
-        # Validate N° Cat (4 digits)
-        if not re.match(r'^\d{4}$', num_cat):
-            errors.append(f"N°Cat invalid: '{num_cat}' (must be 4 digits, found '{num_cat}')")
+        # Validate N° Cat (1-4 digits)
+        if num_cat.strip() and not re.match(r'^\d{1,4}$', num_cat):
+            errors.append(f"N°Cat invalid: '{num_cat}' (must be 1-4 digits)")
 
         if errors:
-            return False, "; ".join(errors)
+            return False, has_matricule, "; ".join(errors)
 
-        return True, None
+        return True, has_matricule, None
 
     def process_file(self):
         """Process the input file and categorize records."""
@@ -82,6 +102,7 @@ class BadgePurger:
         print("=" * 70)
 
         # First pass: validate and collect records
+        records_by_badge = defaultdict(list)
         records_by_matricule = defaultdict(list)
 
         try:
@@ -91,19 +112,37 @@ class BadgePurger:
                 for line_num, row in enumerate(reader, start=1):
                     self.stats['total_lines'] += 1
 
-                    is_valid, error_msg = self.validate_record(line_num, row)
+                    # Skip header/separator lines
+                    if self.is_header_or_separator(row):
+                        self.stats['header_lines'] += 1
+                        continue
+
+                    is_valid, has_matricule, error_msg = self.validate_record(line_num, row)
 
                     if not is_valid:
                         self.error_records.append((line_num, row, error_msg))
                         self.stats['error_lines'] += 1
                         continue
 
-                    matricule = row[3]
-                    immatriculation = row[5].strip() if row[5] else ''
+                    # If valid but no matricule, separate category
+                    if not has_matricule:
+                        self.no_matricule_records.append((line_num, row))
+                        self.stats['no_matricule_lines'] += 1
+                        continue
 
-                    records_by_matricule[matricule].append({
+                    # Valid record with matricule
+                    badge_num = row[0]
+                    matricule = row[3]
+                    immatriculation = row[5].strip()
+
+                    records_by_badge[badge_num].append({
                         'line_num': line_num,
                         'fields': row,
+                        'immatriculation': immatriculation
+                    })
+                    records_by_matricule[matricule].append({
+                        'line_num': line_num,
+                        'badge': badge_num,
                         'immatriculation': immatriculation
                     })
 
@@ -116,37 +155,67 @@ class BadgePurger:
                 for line_num, row in enumerate(reader, start=1):
                     self.stats['total_lines'] += 1
 
-                    is_valid, error_msg = self.validate_record(line_num, row)
+                    if self.is_header_or_separator(row):
+                        self.stats['header_lines'] += 1
+                        continue
+
+                    is_valid, has_matricule, error_msg = self.validate_record(line_num, row)
 
                     if not is_valid:
                         self.error_records.append((line_num, row, error_msg))
                         self.stats['error_lines'] += 1
                         continue
 
-                    matricule = row[3]
-                    immatriculation = row[5].strip() if row[5] else ''
+                    if not has_matricule:
+                        self.no_matricule_records.append((line_num, row))
+                        self.stats['no_matricule_lines'] += 1
+                        continue
 
-                    records_by_matricule[matricule].append({
+                    badge_num = row[0]
+                    matricule = row[3]
+                    immatriculation = row[5].strip()
+
+                    records_by_badge[badge_num].append({
                         'line_num': line_num,
                         'fields': row,
                         'immatriculation': immatriculation
                     })
+                    records_by_matricule[matricule].append({
+                        'line_num': line_num,
+                        'badge': badge_num,
+                        'immatriculation': immatriculation
+                    })
 
         # Second pass: detect duplicates
+        # Strategy: A badge is a duplicate if:
+        # 1. Same badge number appears multiple times (badge reused), OR
+        # 2. Same matricule has multiple different badges (person has multiple badges)
+        # Track which records are flagged as duplicates
+        duplicate_matricules = set()
+        duplicate_badge_nums = set()
+
+        # Check for same matricule on different badges
         for matricule, records in records_by_matricule.items():
-            # Count unique immatriculations for this matricule
-            immatriculations = set(r['immatriculation'] for r in records)
-            num_immatriculations = len(immatriculations)
+            badge_nums = set(r['badge'] for r in records)
+            if len(badge_nums) > 1:
+                # Same matricule, multiple badges = duplicate
+                duplicate_matricules.add(matricule)
+                for r in records:
+                    duplicate_badge_nums.add(r['badge'])
 
-            self.stats['duplicates_by_matricule'][matricule] = num_immatriculations
+        # Check for same badge number on multiple records
+        for badge_num, records in records_by_badge.items():
+            if len(records) > 1:
+                duplicate_badge_nums.add(badge_num)
 
-            if num_immatriculations > 2:
-                # Duplicate detected
+        # Categorize records
+        for badge_num, records in records_by_badge.items():
+            if badge_num in duplicate_badge_nums:
                 for record in records:
                     self.duplicate_records.append((record['line_num'], record['fields']))
                     self.stats['duplicate_lines'] += 1
+                    self.stats['duplicates_by_badge'][badge_num] = records
             else:
-                # Valid record
                 for record in records:
                     self.valid_records.append((record['line_num'], record['fields']))
                     self.stats['valid_lines'] += 1
@@ -170,6 +239,14 @@ class BadgePurger:
             for _, fields in sorted(self.duplicate_records):
                 writer.writerow(fields)
         print(f"[OK] Duplicate records: {duplicate_file}")
+
+        # Write no-matricule records
+        no_matricule_file = self.output_dir / 'badges_sans_matricule.csv'
+        with open(no_matricule_file, 'w', encoding='cp1252', newline='') as f:
+            writer = csv.writer(f, delimiter=';', lineterminator='\r\n')
+            for _, fields in sorted(self.no_matricule_records):
+                writer.writerow(fields)
+        print(f"[OK] No-matricule records: {no_matricule_file}")
 
         # Write error records
         error_file = self.output_dir / 'badges_erreurs.csv'
@@ -197,41 +274,49 @@ class BadgePurger:
             f.write("STATISTIQUES DE TRAITEMENT\r\n")
             f.write("-" * 70 + "\r\n")
             f.write(f"Nombre total de lignes: {self.stats['total_lines']:,}\r\n")
-            f.write(f"Lignes valides (sans doublon): {self.stats['valid_lines']:,}\r\n")
-            f.write(f"Lignes avec doublon: {self.stats['duplicate_lines']:,}\r\n")
+            f.write(f"Lignes d'en-tete/separateurs ignorees: {self.stats['header_lines']:,}\r\n")
+            f.write(f"Lignes traitees: {self.stats['total_lines'] - self.stats['header_lines']:,}\r\n\r\n")
+
+            f.write(f"Lignes valides (avec matricule, sans doublon): {self.stats['valid_lines']:,}\r\n")
+            f.write(f"Lignes en doublon (badge duplique): {self.stats['duplicate_lines']:,}\r\n")
+            f.write(f"Lignes sans matricule (vehicules/partage): {self.stats['no_matricule_lines']:,}\r\n")
             f.write(f"Lignes en erreur: {self.stats['error_lines']:,}\r\n\r\n")
 
             f.write("RESUME\r\n")
             f.write("-" * 70 + "\r\n")
-            total_traites = self.stats['valid_lines'] + self.stats['duplicate_lines']
-            valid_percent = (self.stats['valid_lines'] / self.stats['total_lines'] * 100) if self.stats['total_lines'] > 0 else 0
-            f.write(f"Lignes traitees avec succes: {total_traites:,}\r\n")
-            f.write(f"Taux de validite: {valid_percent:.2f}%\r\n\r\n")
+            total_traites = self.stats['valid_lines'] + self.stats['duplicate_lines'] + self.stats['no_matricule_lines']
+            all_traites = self.stats['total_lines'] - self.stats['header_lines']
+            valid_percent = (self.stats['valid_lines'] / all_traites * 100) if all_traites > 0 else 0
+            f.write(f"Lignes acceptables (valides + sans matricule): {total_traites:,}\r\n")
+            f.write(f"Lignes avec erreurs: {self.stats['error_lines']:,}\r\n")
+            f.write(f"Taux d'acceptabilite: {valid_percent:.2f}%\r\n\r\n")
 
             if self.stats['duplicate_lines'] > 0:
-                f.write("DETAILS DES DOUBLONS\r\n")
+                f.write("DETAILS DES DOUBLONS (BADGES DUPLIQUES)\r\n")
                 f.write("-" * 70 + "\r\n")
 
-                # Count matricules with duplicates
-                matricules_with_duplicates = {}
-                for matricule, immatriculation_count in self.stats['duplicates_by_matricule'].items():
-                    if immatriculation_count > 2:
-                        matricules_with_duplicates[matricule] = immatriculation_count
+                f.write(f"Nombre de badges en doublon: {len(self.stats['duplicates_by_badge']):,}\r\n")
+                f.write(f"Total de lignes concernees: {self.stats['duplicate_lines']:,}\r\n\r\n")
 
-                f.write(f"Nombre de matricules en doublon: {len(matricules_with_duplicates):,}\r\n")
-                f.write(f"Total de badges en doublon: {self.stats['duplicate_lines']:,}\r\n")
-                f.write(f"Moyenne de badges par matricule en doublon: {self.stats['duplicate_lines'] / len(matricules_with_duplicates) if matricules_with_duplicates else 0:.2f}\r\n\r\n")
-
-                # List all duplicates by matricule
-                if matricules_with_duplicates:
-                    f.write("Matricules en doublon (immatriculations differentes > 2):\r\n")
+                # List all duplicates by badge
+                if self.stats['duplicates_by_badge']:
+                    f.write("Badges dupliques (meme numero de badge sur plusieurs lignes):\r\n")
                     f.write("-" * 70 + "\r\n")
-                    for matricule, num_immat in sorted(matricules_with_duplicates.items()):
-                        badges_for_matricule = [line_num for line_num, fields in self.duplicate_records if fields[3] == matricule]
-                        f.write(f"  Matricule {matricule}: {num_immat} immatriculations differentes, {len(badges_for_matricule)} badge(s)\r\n")
-                        for line_num, fields in sorted([(ln, f) for ln, f in self.duplicate_records if f[3] == matricule]):
-                            f.write(f"    - Badge {fields[0]} ({fields[1]} {fields[2]}): Immatriculation={fields[5] if fields[5] else '<vide>'}\r\n")
+                    for badge_num, count in sorted(self.stats['duplicates_by_badge'].items()):
+                        badges_for_badge = [(ln, fi) for ln, fi in self.duplicate_records if fi[0] == badge_num]
+                        f.write(f"  Badge {badge_num}: {count} occurrences\r\n")
+                        for line_num, fields in sorted(badges_for_badge):
+                            matricule = fields[3] if len(fields) > 3 else ''
+                            immat = fields[5] if len(fields) > 5 else ''
+                            immat_display = immat.strip() if immat else '<vide>'
+                            f.write(f"    Ligne {line_num}: {fields[1]} {fields[2]}, Matricule={matricule}, Immat={immat_display}\r\n")
                     f.write("\r\n")
+
+            if self.stats['no_matricule_lines'] > 0:
+                f.write("DETAILS DES BADGES SANS MATRICULE\r\n")
+                f.write("-" * 70 + "\r\n")
+                f.write(f"Total: {self.stats['no_matricule_lines']:,} badges\r\n")
+                f.write("(Vehicules de service, equipements partages, etc.)\r\n\r\n")
 
             if self.stats['error_lines'] > 0:
                 f.write("DETAILS DES ERREURS\r\n")
@@ -249,21 +334,22 @@ class BadgePurger:
                     f.write(f"  - {error_type}: {count} ({percent:.1f}%)\r\n")
                 f.write("\r\n")
 
-                # List first 10 errors as examples
-                f.write("Exemples d'erreurs (10 premieres):\r\n")
+                # List first 20 errors as examples
+                f.write("Exemples d'erreurs (20 premieres):\r\n")
                 f.write("-" * 70 + "\r\n")
-                for i, (line_num, fields, error_msg) in enumerate(sorted(self.error_records)[:10]):
+                for i, (line_num, fields, error_msg) in enumerate(sorted(self.error_records)[:20]):
                     badge = fields[0] if len(fields) > 0 else 'N/A'
                     nom = fields[1] if len(fields) > 1 else ''
                     f.write(f"  Ligne {line_num} - Badge {badge} ({nom}): {error_msg}\r\n")
-                if len(self.error_records) > 10:
-                    f.write(f"  ... et {len(self.error_records) - 10} autres erreurs\r\n")
+                if len(self.error_records) > 20:
+                    f.write(f"  ... et {len(self.error_records) - 20} autres erreurs\r\n")
                 f.write("\r\n")
 
             f.write("FICHIERS GENERES\r\n")
             f.write("-" * 70 + "\r\n")
             f.write(f"[OK] badges_valides.csv ({self.stats['valid_lines']} lignes)\r\n")
             f.write(f"[OK] badges_doublons.csv ({self.stats['duplicate_lines']} lignes)\r\n")
+            f.write(f"[OK] badges_sans_matricule.csv ({self.stats['no_matricule_lines']} lignes)\r\n")
             f.write(f"[OK] badges_erreurs.csv ({self.stats['error_lines']} lignes)\r\n\r\n")
 
             f.write("=" * 70 + "\r\n")
@@ -283,6 +369,7 @@ class BadgePurger:
             print("=" * 70)
             print(f"Lignes valides: {self.stats['valid_lines']:,}")
             print(f"Doublons: {self.stats['duplicate_lines']:,}")
+            print(f"Sans matricule: {self.stats['no_matricule_lines']:,}")
             print(f"Erreurs: {self.stats['error_lines']:,}")
 
             return True
