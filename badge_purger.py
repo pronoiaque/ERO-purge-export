@@ -233,7 +233,7 @@ class BadgePurger:
             f.write(f"[OK] badges_doublons.csv ({self.stats['duplicate_lines']} lignes)\r\n")
             f.write(f"[OK] badges_erreurs.csv ({self.stats['error_lines']} lignes)\r\n")
 
-        print(f"✓ Rapport: {report_file}")
+        print(f"[OK] Rapport: {report_file}")
 
     def run(self):
         """Execute the purge process."""
