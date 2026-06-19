@@ -1,15 +1,17 @@
-# Badge Database Purger (ERO Purge Export)
+# Badge Database Purger - Advanced Edition (ERO Purge Export)
 
-Script Python pour nettoyer et valider une base de données de badges, avec détection automatique des doublons.
+Script Python pour nettoyer et valider une base de données de badges, avec **détection intelligente des doublons** et **recommandations de purge**.
 
 ## 📋 Description
 
 Ce projet automatise le processus de purge d'une base de badges selon les critères de validation métier spécifiques. Le script:
 
 - **Valide** chaque enregistrement contre des règles strictes
-- **Détecte** les doublons (même matricule sur badges différents)
-- **Génère** 5 fichiers de sortie catégorisés (valides, doublons, sans matricule, erreurs, rapport)
-- **Produit** un rapport statistique détaillé
+- **Détecte** les doublons (matricule avec 3+ badges)
+- **Recommande** quels badges conserver (2 premiers = définitif + jumeau MIFARE)
+- **Génère** 7 fichiers de sortie catégorisés (valides, doublons à garder, doublons à purger, collectifs, sans matricule, erreurs, rapport)
+- **Classe** les erreurs par type pour une meilleure traçabilité
+- **Produit** un rapport actionnel détaillé
 
 ## 📥 Format d'entrée
 
@@ -41,58 +43,85 @@ Chaque enregistrement doit respecter les garde-fous suivants:
 | **N° Cat** | 1 à 4 chiffres |
 | **Nombre de champs** | Exactement 7 champs |
 
-### Détection de doublons
+### Détection et traitement des doublons
 
-**Algorithme**: Un matricule est flaggé comme **doublon** uniquement s'il porte **STRICTEMENT PLUS DE 2 badges** (> 2, soit 3 ou plus).
+**Algorithme**: Un matricule est flaggé comme **doublon** si il porte **3+ badges** (> 2).
 
-- **1 ou 2 badges** par matricule = **NORMAL** (badge provisoire + badge définitif, les deux valides)
-- **3 badges et plus** (triplon, quadruplon...) = **DOUBLON**
+**Traitement intelligent:**
+- **1 ou 2 badges** → NORMAL (valide) : garder les 2
+- **3+ badges** → DOUBLON : garder les 2 premiers (déf + jumeau), purger les excédents
 
-> Note métier : le numéro de badge définitif est dérivé du numéro d'immatriculation (les 2 premiers digits de gauche sont retirés). Exemple : immatriculation `1884564620` → badge `84564620`. Un agent a donc légitimement jusqu'à 2 badges (provisoire + définitif).
+**Les 2 badges à garder correspondent généralement à:**
+1. **Badge définitif** : numéro = matricule (porte le MIFARE permanent)
+2. **Jumeau MIFARE** : numéro = 8 derniers chiffres de l'immatriculation (badge temporaire/backup)
 
-**Exemples**:
+**Exemple - Matricule 01090439 (4 badges):**
 ```
-BENDRIES - Matricule 01901464: 2 badges (01901464 + 84564620)
-  → NORMAL (provisoire + definitif), reste en VALIDE
+Ligne 72:  Badge 00211032 → EXCESS (purger)
+Ligne 391: Badge 01090439 (définitif) → GARDER
+Ligne 25159: Badge 11881755 (immat 1711881755[2:]) → GARDER
+Ligne 32008: Badge 30361115 → EXCESS (purger)
 
-TRIPLON - Matricule 55555555: 3 badges (99999996 + 99999997 + 99999998)
-  → DOUBLON (3 > 2), les 3 lignes vont en doublons
+Résultat: 2 gardés, 2 purgés
 ```
 
 ## 📤 Format de sortie
 
-Le script génère **5 fichiers** dans le répertoire de sortie:
+Le script génère **7 fichiers** dans le répertoire de sortie:
 
 ### 1. `badges_valides.csv`
-- Enregistrements valides avec matricule, sans doublon
+- Enregistrements valides avec matricule, sans doublon (1-2 badges = normal)
 - Format identique au fichier d'entrée
 - Encodage: CP1252, fins de ligne: CR LF
 
-### 2. `badges_doublons.csv`
-- Enregistrements dont le matricule porte **plus de 2 badges** (triplon, quadruplon...)
+### 2. `badges_doublons_a_garder.csv`
+- **Les 2 premiers badges** de chaque matricule en doublon (à CONSERVER)
+- Normalement: badge définitif (badge = matricule) + jumeau MIFARE (badge = immat[2:])
 - Format identique au fichier d'entrée
-- Toutes les lignes du matricule concerné sont incluses
+- **Action: RIEN À FAIRE** (garder ces enregistrements)
 
-### 3. `badges_sans_matricule.csv`
+### 3. `badges_doublons_a_purger.csv`
+- **Badges excédentaires** (au-delà des 2 premiers) du même matricule
+- **Action: SUPPRIMER** ces enregistrements
+- Format identique au fichier d'entrée
+
+### 4. `badges_matricule_collectif.csv`
+- Enregistrements valides d'un **matricule partagé** par 3+ personnes différentes
+- Exemple: BIO-NETTOYAGE avec 23 personnes différentes
+- **Action: REVISER** (possiblement un vrai matricule de service/département)
+- Format identique au fichier d'entrée
+
+### 5. `badges_sans_matricule.csv`
 - Enregistrements valides mais SANS matricule
-- Catégorie: véhicules de service, équipements partagés, SAMU, etc.
+- Catégorie: véhicules de service, équipements partagés, SAMU, badges PRET, etc.
 - Format identique au fichier d'entrée
-- Ces lignes ne sont pas considérées comme des erreurs
+- **Action: VALIDER** (vérifier si intentionnel)
 
-### 4. `badges_erreurs.csv`
+### 6. `badges_erreurs.csv`
 - Enregistrements qui n'ont pas passé la validation
-- Format enrichi avec colonne d'erreur:
+- Format enrichi avec colonne TYPE_ERREUR:
   ```
-  # Ligne;N°Badge;Nom;Prenom;Matricule;Categorie;Immatriculation;N°Cat;ERREUR
-  3;00011404;PENELLO;CHARLENE;01347502;2110 Z S T C D HE;;766;N°Cat invalid: '766' (must be 1-4 digits)
+  # Ligne;N°Badge;Nom;Prenom;Matricule;Categorie;Immatriculation;N°Cat;TYPE_ERREUR;ERREUR
+  9;00012879;winiewski;;290019;...;;1838;Matricule_mauvaise_longueur;N°Matricule invalid: '290019' (must be 8 digits if present)
   ```
 
-### 5. `rapport_purge.txt`
+**Types d'erreur possibles:**
+- `Badge_non_numerique` / `Badge_mauvaise_longueur` : N°Badge invalide
+- `Matricule_non_numerique` / `Matricule_mauvaise_longueur` : N°Matricule invalide
+- `Immatriculation_texte_libre` / `Immatriculation_mauvaise_longueur` : N°Immatriculation invalide
+- `NumCat_non_numerique` / `NumCat_mauvaise_longueur` : N°Cat invalide
+- `Invalid_field_count` : Nombre de champs incorrect
+
+### 7. `rapport_purge.txt`
 Rapport détaillé contenant:
 - **Métadonnées**: Date, fichier d'entrée, répertoire de sortie
-- **Statistiques globales**: Total lignes, lignes valides, doublons, erreurs
-- **Taux de validité**: Pourcentage d'enregistrements correctement traités
-- **Analyse des erreurs**: Décomposition par type d'erreur
+- **Statistiques globales**: Total lignes, valides, doublons (garder/purger), collectifs, sans matricule, erreurs
+- **Taux d'acceptabilité**: Pourcentage d'enregistrements acceptables
+- **Action recommandée**: 
+  - CONSERVER: X badges (fichier a_garder)
+  - PURGER: Y badges (fichier a_purger)
+  - REVISER: Z badges (fichier collectif)
+- **Analyse des erreurs**: Décomposition par type, avec exemples
 - **Liste des fichiers générés**
 
 **Exemple de rapport**:
@@ -150,21 +179,30 @@ python badge_purger.py ./test_badges.csv ./results
 
 ## 📊 Cas d'usage et exemples
 
-### Exemple 1: Mix valides, erreurs, sans matricule
+### Exemple 1: Mix valides, doublons, erreurs
 **Fichier d'entrée** (`badges.csv`):
 ```
 12345678;Dupont;Jean;87654321;Manager;1234567890;0001
 12345679;Martin;Marie;87654322;Operateur;1234567891;0002
-INVALID;Durand;Paul;87654323;Operateur;1234567892;0003
-12345680;SAMU;;;;<vide>;0004
-12345681;Lefevre;Pierre;87654324;Manager;;90
+12345680;Dupont;Jean;87654321;Manager;;0003
+12345681;Dupont;Jean;87654321;Manager;;0004
+INVALID;Durand;Paul;87654323;Operateur;1234567892;0005
+12345682;SAMU;;;;<vide>;0006
 ```
 
 **Résultats**:
-- `badges_valides.csv`: 2 lignes (12345678, 12345679, 12345681)
-- `badges_sans_matricule.csv`: 1 ligne (SAMU - véhicule sans matricule)
-- `badges_erreurs.csv`: 1 ligne (INVALID - mauvais numéro de badge)
-- `rapport_purge.txt`: Statistiques détaillées
+- **Ligne 1-2**: 2 badges différents pour 2 matricules → `badges_valides.csv`
+- **Lignes 3-5**: Matricule `87654321` sur 4 badges (12345678, 12345680, 12345681, 12345682)
+  - Lignes 3-4 (premiers 2) → `badges_doublons_a_garder.csv`
+  - Ligne 5 (excédent) → `badges_doublons_a_purger.csv`
+- **Ligne 6**: Badge INVALID → `badges_erreurs.csv` (Badge_non_numerique)
+- **Ligne 7**: SAMU sans matricule → `badges_sans_matricule.csv`
+
+**Action recommandée:**
+```
+CONSERVER: 4 badges (2 valides + 2 doublons à garder)
+PURGER: 1 badge (excess)
+```
 
 ### Exemple 2: Détection de doublons (règle > 2 badges)
 **Fichier d'entrée**:
