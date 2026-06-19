@@ -7,8 +7,8 @@ Script Python pour nettoyer et valider une base de données de badges, avec dét
 Ce projet automatise le processus de purge d'une base de badges selon les critères de validation métier spécifiques. Le script:
 
 - **Valide** chaque enregistrement contre des règles strictes
-- **Détecte** les doublons basés sur les immatriculations par matricule
-- **Génère** 4 fichiers de sortie catégorisés
+- **Détecte** les doublons (même matricule sur badges différents)
+- **Génère** 5 fichiers de sortie catégorisés (valides, doublons, sans matricule, erreurs, rapport)
 - **Produit** un rapport statistique détaillé
 
 ## 📥 Format d'entrée
@@ -36,47 +36,59 @@ Chaque enregistrement doit respecter les garde-fous suivants:
 | Champ | Règle | 
 |-------|-------|
 | **N° Badge** | Exactement 8 chiffres |
-| **N° Matricule** | Exactement 8 chiffres |
-| **N° Immatriculation** | NULL ou exactement 10 chiffres |
-| **N° Cat** | Exactement 4 chiffres |
+| **N° Matricule** | 8 chiffres OU vide (pour véhicules/équipement) |
+| **N° Immatriculation** | NULL/'<vide>' ou exactement 10 chiffres |
+| **N° Cat** | 1 à 4 chiffres |
 | **Nombre de champs** | Exactement 7 champs |
 
 ### Détection de doublons
 
-**Algorithme**: Un matricule est considéré comme doublon si:
-- Il possède **plus de 2 immatriculations différentes**
+**Algorithme**: Un badge/matricule est flaggé comme doublon si:
+1. **Même badge** appear sur 2+ lignes différentes (réutilisation), OU
+2. **Même matricule** possède 2+ badges différents (personne reçoit plusieurs badges)
 
-**Exemple**:
+**Exemples**:
 ```
-Matricule: 12345678
-  - Immatriculation 1: 1111111111
-  - Immatriculation 2: 2222222222
-  - Immatriculation 3: 3333333333  ← > 2 → DOUBLON
+BENDRIES - Matricule 01901464:
+  - Badge 01901464 (immat 1884564620)
+  - Badge 84564620 (immat vide)
+  → DOUBLON: 2 badges différents pour le même matricule
+
+CARADEC - Matricule 01899306:
+  - Badge 01899306 (immat 4205854007)
+  - Badge 05854007 (immat vide)
+  → DOUBLON: 2 badges différents pour le même matricule
 ```
 
 ## 📤 Format de sortie
 
-Le script génère **4 fichiers** dans le répertoire de sortie:
+Le script génère **5 fichiers** dans le répertoire de sortie:
 
 ### 1. `badges_valides.csv`
-- Enregistrements valides sans doublons
+- Enregistrements valides avec matricule, sans doublon
 - Format identique au fichier d'entrée
 - Encodage: CP1252, fins de ligne: CR LF
 
 ### 2. `badges_doublons.csv`
-- Enregistrements flaggés comme doublons
+- Enregistrements flaggés comme doublons (même matricule sur badges différents, ou badge réutilisé)
 - Format identique au fichier d'entrée
 - Chaque ligne représente un badge problématique
 
-### 3. `badges_erreurs.csv`
+### 3. `badges_sans_matricule.csv`
+- Enregistrements valides mais SANS matricule
+- Catégorie: véhicules de service, équipements partagés, SAMU, etc.
+- Format identique au fichier d'entrée
+- Ces lignes ne sont pas considérées comme des erreurs
+
+### 4. `badges_erreurs.csv`
 - Enregistrements qui n'ont pas passé la validation
 - Format enrichi avec colonne d'erreur:
   ```
-  # Ligne;N°Badge;Nom;Prenom;Matricule;Catégorie;Immatriculation;N°Cat;ERREUR
-  1;XXXXX;Dupont;Jean;8765432;Manager;1234567890;0001;N°Badge invalid: 'XXXXX' (must be 8 digits)
+  # Ligne;N°Badge;Nom;Prenom;Matricule;Categorie;Immatriculation;N°Cat;ERREUR
+  3;00011404;PENELLO;CHARLENE;01347502;2110 Z S T C D HE;;766;N°Cat invalid: '766' (must be 1-4 digits)
   ```
 
-### 4. `rapport_purge.txt`
+### 5. `rapport_purge.txt`
 Rapport détaillé contenant:
 - **Métadonnées**: Date, fichier d'entrée, répertoire de sortie
 - **Statistiques globales**: Total lignes, lignes valides, doublons, erreurs
@@ -139,32 +151,35 @@ python badge_purger.py ./test_badges.csv ./results
 
 ## 📊 Cas d'usage et exemples
 
-### Exemple 1: Entrée simple
+### Exemple 1: Mix valides, erreurs, sans matricule
 **Fichier d'entrée** (`badges.csv`):
 ```
 12345678;Dupont;Jean;87654321;Manager;1234567890;0001
 12345679;Martin;Marie;87654322;Operateur;1234567891;0002
 INVALID;Durand;Paul;87654323;Operateur;1234567892;0003
-12345680;Lefevre;Pierre;87654324;Manager;;0004
+12345680;SAMU;;;;<vide>;0004
+12345681;Lefevre;Pierre;87654324;Manager;;90
 ```
 
 **Résultats**:
-- `badges_valides.csv`: 2 lignes (12345678, 12345680)
-- `badges_erreurs.csv`: 2 lignes (INVALID - mauvais format, Durand - immatriculation manquante mais marquée comme NULL)
+- `badges_valides.csv`: 2 lignes (12345678, 12345679, 12345681)
+- `badges_sans_matricule.csv`: 1 ligne (SAMU - véhicule sans matricule)
+- `badges_erreurs.csv`: 1 ligne (INVALID - mauvais numéro de badge)
 - `rapport_purge.txt`: Statistiques détaillées
 
 ### Exemple 2: Détection de doublons
 **Fichier d'entrée**:
 ```
-11111111;Agent1;Test;99999999;Operator;1111111111;0001
-11111112;Agent2;Test;99999999;Operator;2222222222;0002
-11111113;Agent3;Test;99999999;Operator;3333333333;0003
+01901464;BENDRIES;OLIVIER;01901464;0282 DSI;1884564620;170
+84564620;BENDRIES;OLIVIER;01901464;0282 DSI;;170
+01899306;CARADEC;PHILIPPE;01899306;0105 ASST;4205854007;78
+05854007;CARADEC;PHILIPPE;01899306;0105 ASST;;170
 ```
 
 **Résultats**:
-- Matricule `99999999` a 3 immatriculations différentes (> 2)
-- Toutes les 3 lignes vont dans `badges_doublons.csv`
-- Ligne 11111112, 11111113, 11111114 marquées comme doublons
+- **BENDRIES**: Matricule `01901464` sur 2 badges différents (`01901464` et `84564620`) → DOUBLON
+- **CARADEC**: Matricule `01899306` sur 2 badges différents (`01899306` et `05854007`) → DOUBLON
+- Toutes les 4 lignes vont dans `badges_doublons.csv`
 
 ## 🔄 Flux de traitement
 
