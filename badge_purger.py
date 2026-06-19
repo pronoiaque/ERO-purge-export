@@ -3,7 +3,7 @@
 Badge Database Purger
 Removes duplicates and validates badge records from a CSV file.
 
-Input format: N°badge(8digits);Nom;Prenom;Matricule(8digits);Catégorie(texte);Immatriculation(10digits);N°Cat(4digits)
+Input format: N°badge(8digits);Nom;Prenom;Matricule(8digits);Categorie(texte);Immatriculation(10digits);N°Cat(4digits)
 
 Output files:
 - badges_valides.csv: Valid records without duplicates
@@ -69,7 +69,7 @@ class BadgePurger:
 
         # Validate N° Cat (4 digits)
         if not re.match(r'^\d{4}$', num_cat):
-            errors.append(f"N°Cat invalid: '{num_cat}' (must be 4 digits)")
+            errors.append(f"N°Cat invalid: '{num_cat}' (must be 4 digits, found '{num_cat}')")
 
         if errors:
             return False, "; ".join(errors)
@@ -191,8 +191,8 @@ class BadgePurger:
             f.write("=" * 70 + "\r\n\r\n")
 
             f.write(f"Date/Heure: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\r\n")
-            f.write(f"Fichier d'entrée: {self.input_file}\r\n")
-            f.write(f"Répertoire de sortie: {self.output_dir}\r\n\r\n")
+            f.write(f"Fichier d'entree: {self.input_file}\r\n")
+            f.write(f"Repertoire de sortie: {self.output_dir}\r\n\r\n")
 
             f.write("STATISTIQUES DE TRAITEMENT\r\n")
             f.write("-" * 70 + "\r\n")
@@ -201,21 +201,40 @@ class BadgePurger:
             f.write(f"Lignes avec doublon: {self.stats['duplicate_lines']:,}\r\n")
             f.write(f"Lignes en erreur: {self.stats['error_lines']:,}\r\n\r\n")
 
-            f.write("RÉSUMÉ\r\n")
+            f.write("RESUME\r\n")
             f.write("-" * 70 + "\r\n")
             total_traites = self.stats['valid_lines'] + self.stats['duplicate_lines']
             valid_percent = (self.stats['valid_lines'] / self.stats['total_lines'] * 100) if self.stats['total_lines'] > 0 else 0
-            f.write(f"Lignes traitées avec succès: {total_traites:,}\r\n")
-            f.write(f"Taux de validité: {valid_percent:.2f}%\r\n\r\n")
+            f.write(f"Lignes traitees avec succes: {total_traites:,}\r\n")
+            f.write(f"Taux de validite: {valid_percent:.2f}%\r\n\r\n")
 
             if self.stats['duplicate_lines'] > 0:
-                f.write("DÉTAILS DES DOUBLONS\r\n")
+                f.write("DETAILS DES DOUBLONS\r\n")
                 f.write("-" * 70 + "\r\n")
-                f.write(f"Nombre de matricules avec doublons: {sum(1 for v in self.stats['duplicates_by_matricule'].values() if v > 2):,}\r\n")
-                f.write(f"Total de badges en doublons: {self.stats['duplicate_lines']:,}\r\n\r\n")
+
+                # Count matricules with duplicates
+                matricules_with_duplicates = {}
+                for matricule, immatriculation_count in self.stats['duplicates_by_matricule'].items():
+                    if immatriculation_count > 2:
+                        matricules_with_duplicates[matricule] = immatriculation_count
+
+                f.write(f"Nombre de matricules en doublon: {len(matricules_with_duplicates):,}\r\n")
+                f.write(f"Total de badges en doublon: {self.stats['duplicate_lines']:,}\r\n")
+                f.write(f"Moyenne de badges par matricule en doublon: {self.stats['duplicate_lines'] / len(matricules_with_duplicates) if matricules_with_duplicates else 0:.2f}\r\n\r\n")
+
+                # List all duplicates by matricule
+                if matricules_with_duplicates:
+                    f.write("Matricules en doublon (immatriculations differentes > 2):\r\n")
+                    f.write("-" * 70 + "\r\n")
+                    for matricule, num_immat in sorted(matricules_with_duplicates.items()):
+                        badges_for_matricule = [line_num for line_num, fields in self.duplicate_records if fields[3] == matricule]
+                        f.write(f"  Matricule {matricule}: {num_immat} immatriculations differentes, {len(badges_for_matricule)} badge(s)\r\n")
+                        for line_num, fields in sorted([(ln, f) for ln, f in self.duplicate_records if f[3] == matricule]):
+                            f.write(f"    - Badge {fields[0]} ({fields[1]} {fields[2]}): Immatriculation={fields[5] if fields[5] else '<vide>'}\r\n")
+                    f.write("\r\n")
 
             if self.stats['error_lines'] > 0:
-                f.write("DÉTAILS DES ERREURS\r\n")
+                f.write("DETAILS DES ERREURS\r\n")
                 f.write("-" * 70 + "\r\n")
                 error_types = defaultdict(int)
                 for _, _, error_msg in self.error_records:
@@ -223,15 +242,32 @@ class BadgePurger:
                     first_error = error_msg.split(';')[0] if error_msg else 'Unknown'
                     error_types[first_error] += 1
 
+                f.write(f"Total d'erreurs detectees: {self.stats['error_lines']:,}\r\n\r\n")
+                f.write("Repartition par type d'erreur:\r\n")
                 for error_type, count in sorted(error_types.items(), key=lambda x: x[1], reverse=True):
-                    f.write(f"  - {error_type}: {count}\r\n")
+                    percent = (count / self.stats['error_lines'] * 100) if self.stats['error_lines'] > 0 else 0
+                    f.write(f"  - {error_type}: {count} ({percent:.1f}%)\r\n")
+                f.write("\r\n")
+
+                # List first 10 errors as examples
+                f.write("Exemples d'erreurs (10 premieres):\r\n")
+                f.write("-" * 70 + "\r\n")
+                for i, (line_num, fields, error_msg) in enumerate(sorted(self.error_records)[:10]):
+                    badge = fields[0] if len(fields) > 0 else 'N/A'
+                    nom = fields[1] if len(fields) > 1 else ''
+                    f.write(f"  Ligne {line_num} - Badge {badge} ({nom}): {error_msg}\r\n")
+                if len(self.error_records) > 10:
+                    f.write(f"  ... et {len(self.error_records) - 10} autres erreurs\r\n")
                 f.write("\r\n")
 
             f.write("FICHIERS GENERES\r\n")
             f.write("-" * 70 + "\r\n")
             f.write(f"[OK] badges_valides.csv ({self.stats['valid_lines']} lignes)\r\n")
             f.write(f"[OK] badges_doublons.csv ({self.stats['duplicate_lines']} lignes)\r\n")
-            f.write(f"[OK] badges_erreurs.csv ({self.stats['error_lines']} lignes)\r\n")
+            f.write(f"[OK] badges_erreurs.csv ({self.stats['error_lines']} lignes)\r\n\r\n")
+
+            f.write("=" * 70 + "\r\n")
+            f.write("Fin du rapport\r\n")
 
         print(f"[OK] Rapport: {report_file}")
 
