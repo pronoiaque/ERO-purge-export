@@ -36,7 +36,7 @@ class BadgePurger:
             'duplicate_lines': 0,
             'no_matricule_lines': 0,
             'error_lines': 0,
-            'duplicates_by_badge': defaultdict(list)
+            'duplicates_by_matricule': defaultdict(list)
         }
 
         # Data storage
@@ -143,6 +143,7 @@ class BadgePurger:
                     records_by_matricule[matricule].append({
                         'line_num': line_num,
                         'badge': badge_num,
+                        'fields': row,
                         'immatriculation': immatriculation
                     })
 
@@ -183,39 +184,25 @@ class BadgePurger:
                     records_by_matricule[matricule].append({
                         'line_num': line_num,
                         'badge': badge_num,
+                        'fields': row,
                         'immatriculation': immatriculation
                     })
 
         # Second pass: detect duplicates
-        # Strategy: A badge is a duplicate if:
-        # 1. Same badge number appears multiple times (badge reused), OR
-        # 2. Same matricule has multiple different badges (person has multiple badges)
-        # Track which records are flagged as duplicates
-        duplicate_matricules = set()
-        duplicate_badge_nums = set()
-
-        # Check for same matricule on different badges
+        # RULE: A matricule is a "doublon" only if it carries MORE THAN 2 badges (> 2).
+        # 1 or 2 badges per matricule is normal (provisional + definitive badge).
+        # 3+ badges (triplon, quadruplon...) = doublon -> all those records flagged.
         for matricule, records in records_by_matricule.items():
-            badge_nums = set(r['badge'] for r in records)
-            if len(badge_nums) > 1:
-                # Same matricule, multiple badges = duplicate
-                duplicate_matricules.add(matricule)
-                for r in records:
-                    duplicate_badge_nums.add(r['badge'])
+            distinct_badges = set(r['badge'] for r in records)
 
-        # Check for same badge number on multiple records
-        for badge_num, records in records_by_badge.items():
-            if len(records) > 1:
-                duplicate_badge_nums.add(badge_num)
-
-        # Categorize records
-        for badge_num, records in records_by_badge.items():
-            if badge_num in duplicate_badge_nums:
+            if len(distinct_badges) > 2:
+                # Doublon detected for this matricule
+                self.stats['duplicates_by_matricule'][matricule] = records
                 for record in records:
                     self.duplicate_records.append((record['line_num'], record['fields']))
                     self.stats['duplicate_lines'] += 1
-                    self.stats['duplicates_by_badge'][badge_num] = records
             else:
+                # Normal: 1 or 2 badges per matricule
                 for record in records:
                     self.valid_records.append((record['line_num'], record['fields']))
                     self.stats['valid_lines'] += 1
@@ -292,25 +279,35 @@ class BadgePurger:
             f.write(f"Taux d'acceptabilite: {valid_percent:.2f}%\r\n\r\n")
 
             if self.stats['duplicate_lines'] > 0:
-                f.write("DETAILS DES DOUBLONS (BADGES DUPLIQUES)\r\n")
+                f.write("DETAILS DES DOUBLONS (MATRICULE AVEC > 2 BADGES)\r\n")
                 f.write("-" * 70 + "\r\n")
 
-                f.write(f"Nombre de badges en doublon: {len(self.stats['duplicates_by_badge']):,}\r\n")
-                f.write(f"Total de lignes concernees: {self.stats['duplicate_lines']:,}\r\n\r\n")
+                f.write(f"Nombre de matricules en doublon: {len(self.stats['duplicates_by_matricule']):,}\r\n")
+                f.write(f"Total de badges concernes: {self.stats['duplicate_lines']:,}\r\n\r\n")
 
-                # List all duplicates by badge
-                if self.stats['duplicates_by_badge']:
-                    f.write("Badges dupliques (meme numero de badge sur plusieurs lignes):\r\n")
-                    f.write("-" * 70 + "\r\n")
-                    for badge_num, count in sorted(self.stats['duplicates_by_badge'].items()):
-                        badges_for_badge = [(ln, fi) for ln, fi in self.duplicate_records if fi[0] == badge_num]
-                        f.write(f"  Badge {badge_num}: {count} occurrences\r\n")
-                        for line_num, fields in sorted(badges_for_badge):
-                            matricule = fields[3] if len(fields) > 3 else ''
-                            immat = fields[5] if len(fields) > 5 else ''
-                            immat_display = immat.strip() if immat else '<vide>'
-                            f.write(f"    Ligne {line_num}: {fields[1]} {fields[2]}, Matricule={matricule}, Immat={immat_display}\r\n")
-                    f.write("\r\n")
+                # Distribution by badge count (triplon, quadruplon, ...)
+                count_distribution = defaultdict(int)
+                for matricule, records in self.stats['duplicates_by_matricule'].items():
+                    nb_badges = len(set(r['badge'] for r in records))
+                    count_distribution[nb_badges] += 1
+                f.write("Repartition par nombre de badges:\r\n")
+                for nb_badges in sorted(count_distribution):
+                    label = {3: "triplon", 4: "quadruplon"}.get(nb_badges, f"{nb_badges} badges")
+                    f.write(f"  - {nb_badges} badges ({label}): {count_distribution[nb_badges]} matricule(s)\r\n")
+                f.write("\r\n")
+
+                # List all duplicates by matricule
+                f.write("Matricules en doublon (detail):\r\n")
+                f.write("-" * 70 + "\r\n")
+                for matricule, records in sorted(self.stats['duplicates_by_matricule'].items()):
+                    nb_badges = len(set(r['badge'] for r in records))
+                    f.write(f"  Matricule {matricule}: {nb_badges} badges distincts\r\n")
+                    for record in sorted(records, key=lambda r: r['line_num']):
+                        fields = record['fields']
+                        immat = fields[5].strip() if len(fields) > 5 and fields[5] else ''
+                        immat_display = immat if immat else '<vide>'
+                        f.write(f"    Ligne {record['line_num']}: Badge {fields[0]}, {fields[1]} {fields[2]}, Immat={immat_display}\r\n")
+                f.write("\r\n")
 
             if self.stats['no_matricule_lines'] > 0:
                 f.write("DETAILS DES BADGES SANS MATRICULE\r\n")

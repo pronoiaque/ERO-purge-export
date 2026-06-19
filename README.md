@@ -43,21 +43,20 @@ Chaque enregistrement doit respecter les garde-fous suivants:
 
 ### Détection de doublons
 
-**Algorithme**: Un badge/matricule est flaggé comme doublon si:
-1. **Même badge** appear sur 2+ lignes différentes (réutilisation), OU
-2. **Même matricule** possède 2+ badges différents (personne reçoit plusieurs badges)
+**Algorithme**: Un matricule est flaggé comme **doublon** uniquement s'il porte **STRICTEMENT PLUS DE 2 badges** (> 2, soit 3 ou plus).
+
+- **1 ou 2 badges** par matricule = **NORMAL** (badge provisoire + badge définitif, les deux valides)
+- **3 badges et plus** (triplon, quadruplon...) = **DOUBLON**
+
+> Note métier : le numéro de badge définitif est dérivé du numéro d'immatriculation (les 2 premiers digits de gauche sont retirés). Exemple : immatriculation `1884564620` → badge `84564620`. Un agent a donc légitimement jusqu'à 2 badges (provisoire + définitif).
 
 **Exemples**:
 ```
-BENDRIES - Matricule 01901464:
-  - Badge 01901464 (immat 1884564620)
-  - Badge 84564620 (immat vide)
-  → DOUBLON: 2 badges différents pour le même matricule
+BENDRIES - Matricule 01901464: 2 badges (01901464 + 84564620)
+  → NORMAL (provisoire + definitif), reste en VALIDE
 
-CARADEC - Matricule 01899306:
-  - Badge 01899306 (immat 4205854007)
-  - Badge 05854007 (immat vide)
-  → DOUBLON: 2 badges différents pour le même matricule
+TRIPLON - Matricule 55555555: 3 badges (99999996 + 99999997 + 99999998)
+  → DOUBLON (3 > 2), les 3 lignes vont en doublons
 ```
 
 ## 📤 Format de sortie
@@ -70,9 +69,9 @@ Le script génère **5 fichiers** dans le répertoire de sortie:
 - Encodage: CP1252, fins de ligne: CR LF
 
 ### 2. `badges_doublons.csv`
-- Enregistrements flaggés comme doublons (même matricule sur badges différents, ou badge réutilisé)
+- Enregistrements dont le matricule porte **plus de 2 badges** (triplon, quadruplon...)
 - Format identique au fichier d'entrée
-- Chaque ligne représente un badge problématique
+- Toutes les lignes du matricule concerné sont incluses
 
 ### 3. `badges_sans_matricule.csv`
 - Enregistrements valides mais SANS matricule
@@ -167,19 +166,20 @@ INVALID;Durand;Paul;87654323;Operateur;1234567892;0003
 - `badges_erreurs.csv`: 1 ligne (INVALID - mauvais numéro de badge)
 - `rapport_purge.txt`: Statistiques détaillées
 
-### Exemple 2: Détection de doublons
+### Exemple 2: Détection de doublons (règle > 2 badges)
 **Fichier d'entrée**:
 ```
 01901464;BENDRIES;OLIVIER;01901464;0282 DSI;1884564620;170
 84564620;BENDRIES;OLIVIER;01901464;0282 DSI;;170
-01899306;CARADEC;PHILIPPE;01899306;0105 ASST;4205854007;78
-05854007;CARADEC;PHILIPPE;01899306;0105 ASST;;170
+99999996;TRIPLON;TEST;55555555;CAT A;9999999996;100
+99999997;TRIPLON;TEST;55555555;CAT A;9999999997;100
+99999998;TRIPLON;TEST;55555555;CAT A;;100
 ```
 
 **Résultats**:
-- **BENDRIES**: Matricule `01901464` sur 2 badges différents (`01901464` et `84564620`) → DOUBLON
-- **CARADEC**: Matricule `01899306` sur 2 badges différents (`01899306` et `05854007`) → DOUBLON
-- Toutes les 4 lignes vont dans `badges_doublons.csv`
+- **BENDRIES**: Matricule `01901464` sur 2 badges → **VALIDE** (normal)
+- **TRIPLON**: Matricule `55555555` sur 3 badges (> 2) → **DOUBLON**
+- Les 3 lignes TRIPLON vont dans `badges_doublons.csv`
 
 ## 🔄 Flux de traitement
 
