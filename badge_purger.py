@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """
-Badge Database Purger
+Badge Database Purger - Advanced Edition
 Removes duplicates and validates badge records from a CSV file.
 
 Input format: N°badge(8digits);Nom;Prenom;Matricule(8digits);Categorie(texte);Immatriculation(10digits);N°Cat(1-4digits)
 
 Output files:
 - badges_valides.csv: Valid records without duplicates
-- badges_doublons.csv: Records flagged as duplicates (badge derived from immatriculation)
+- badges_doublons_a_garder.csv: Definitive badge + MIFARE twin (normal, keep)
+- badges_doublons_a_purger.csv: Excess badges beyond the pair (purge)
+- badges_matricule_collectif.csv: Shared matricules (multiple different persons)
 - badges_sans_matricule.csv: Records with no matricule (vehicles, shared equipment)
-- badges_erreurs.csv: Records that failed validation
+- badges_erreurs.csv: Records that failed validation (with error type)
 - rapport_purge.txt: Processing statistics report
 """
 
@@ -31,17 +33,22 @@ class BadgePurger:
         self.stats = {
             'total_lines': 0,
             'header_lines': 0,
-            'separator_lines': 0,
             'valid_lines': 0,
-            'duplicate_lines': 0,
+            'doublon_keep_lines': 0,
+            'doublon_purge_lines': 0,
+            'collectif_lines': 0,
             'no_matricule_lines': 0,
             'error_lines': 0,
-            'duplicates_by_matricule': defaultdict(list)
+            'error_types': defaultdict(int),
+            'matricules_collectif': set(),
+            'matricules_doublon': set(),
         }
 
         # Data storage
         self.valid_records = []
-        self.duplicate_records = []
+        self.doublon_keep_records = []
+        self.doublon_purge_records = []
+        self.collectif_records = []
         self.no_matricule_records = []
         self.error_records = []
 
@@ -55,6 +62,48 @@ class BadgePurger:
         if len(fields) > 0 and 'badge' in fields[0].lower() and 'nom' in str(fields).lower():
             return True
         return False
+
+    @staticmethod
+    def classify_error(fields):
+        """Classify the type of error in the record."""
+        if len(fields) < 7:
+            return "Invalid_field_count"
+
+        badge_num, nom, prenom, matricule, categorie, immatriculation, num_cat = fields[:7]
+
+        errors = []
+
+        # N° Badge validation
+        if not re.match(r'^\d{8}$', badge_num):
+            if not re.match(r'^\d+$', badge_num):
+                errors.append("Badge_non_numerique")
+            else:
+                errors.append("Badge_mauvaise_longueur")
+
+        # N° Matricule validation
+        if matricule.strip():
+            if not re.match(r'^\d{8}$', matricule):
+                if not re.match(r'^\d+$', matricule):
+                    errors.append("Matricule_non_numerique")
+                else:
+                    errors.append("Matricule_mauvaise_longueur")
+
+        # N° Immatriculation validation
+        immat_clean = immatriculation.strip()
+        if immat_clean and immat_clean.lower() != '<vide>':
+            if not re.match(r'^\d+$', immat_clean):
+                errors.append("Immatriculation_texte_libre")
+            elif len(immat_clean) != 10:
+                errors.append("Immatriculation_mauvaise_longueur")
+
+        # N° Cat validation
+        if num_cat.strip() and not re.match(r'^\d{1,4}$', num_cat):
+            if not re.match(r'^\d+$', num_cat):
+                errors.append("NumCat_non_numerique")
+            else:
+                errors.append("NumCat_mauvaise_longueur")
+
+        return errors[0] if errors else "Unknown"
 
     @staticmethod
     def validate_record(line_number, fields):
@@ -102,7 +151,6 @@ class BadgePurger:
         print("=" * 70)
 
         # First pass: validate and collect records
-        records_by_badge = defaultdict(list)
         records_by_matricule = defaultdict(list)
 
         try:
@@ -120,8 +168,10 @@ class BadgePurger:
                     is_valid, has_matricule, error_msg = self.validate_record(line_num, row)
 
                     if not is_valid:
-                        self.error_records.append((line_num, row, error_msg))
+                        error_type = self.classify_error(row)
+                        self.error_records.append((line_num, row, error_msg, error_type))
                         self.stats['error_lines'] += 1
+                        self.stats['error_types'][error_type] += 1
                         continue
 
                     # If valid but no matricule, separate category
@@ -131,15 +181,10 @@ class BadgePurger:
                         continue
 
                     # Valid record with matricule
-                    badge_num = row[0]
                     matricule = row[3]
+                    badge_num = row[0]
                     immatriculation = row[5].strip()
 
-                    records_by_badge[badge_num].append({
-                        'line_num': line_num,
-                        'fields': row,
-                        'immatriculation': immatriculation
-                    })
                     records_by_matricule[matricule].append({
                         'line_num': line_num,
                         'badge': badge_num,
@@ -163,8 +208,10 @@ class BadgePurger:
                     is_valid, has_matricule, error_msg = self.validate_record(line_num, row)
 
                     if not is_valid:
-                        self.error_records.append((line_num, row, error_msg))
+                        error_type = self.classify_error(row)
+                        self.error_records.append((line_num, row, error_msg, error_type))
                         self.stats['error_lines'] += 1
+                        self.stats['error_types'][error_type] += 1
                         continue
 
                     if not has_matricule:
@@ -172,15 +219,10 @@ class BadgePurger:
                         self.stats['no_matricule_lines'] += 1
                         continue
 
-                    badge_num = row[0]
                     matricule = row[3]
+                    badge_num = row[0]
                     immatriculation = row[5].strip()
 
-                    records_by_badge[badge_num].append({
-                        'line_num': line_num,
-                        'fields': row,
-                        'immatriculation': immatriculation
-                    })
                     records_by_matricule[matricule].append({
                         'line_num': line_num,
                         'badge': badge_num,
@@ -188,24 +230,60 @@ class BadgePurger:
                         'immatriculation': immatriculation
                     })
 
-        # Second pass: detect duplicates
-        # RULE: A matricule is a "doublon" only if it carries MORE THAN 2 badges (> 2).
-        # 1 or 2 badges per matricule is normal (provisional + definitive badge).
-        # 3+ badges (triplon, quadruplon...) = doublon -> all those records flagged.
+        # Second pass: detect duplicates and categorize
         for matricule, records in records_by_matricule.items():
             distinct_badges = set(r['badge'] for r in records)
 
-            if len(distinct_badges) > 2:
-                # Doublon detected for this matricule
-                self.stats['duplicates_by_matricule'][matricule] = records
-                for record in records:
-                    self.duplicate_records.append((record['line_num'], record['fields']))
-                    self.stats['duplicate_lines'] += 1
-            else:
+            if len(distinct_badges) <= 2:
                 # Normal: 1 or 2 badges per matricule
                 for record in records:
                     self.valid_records.append((record['line_num'], record['fields']))
                     self.stats['valid_lines'] += 1
+            else:
+                # Doublon: 3+ badges
+                self.stats['matricules_doublon'].add(matricule)
+
+                # Strategy: keep the 2 badges with the earliest line numbers
+                # (usually definitive + MIFARE twin), purge the rest
+                sorted_records = sorted(records, key=lambda r: r['line_num'])
+
+                for i, record in enumerate(sorted_records):
+                    if i < 2:
+                        # Keep first 2
+                        self.doublon_keep_records.append((record['line_num'], record['fields']))
+                        self.stats['doublon_keep_lines'] += 1
+                    else:
+                        # Purge the rest
+                        self.doublon_purge_records.append((record['line_num'], record['fields']))
+                        self.stats['doublon_purge_lines'] += 1
+
+        # Third pass: detect collective matricules (shared by different persons)
+        for matricule, records in records_by_matricule.items():
+            if matricule in self.stats['matricules_doublon']:
+                # Extract unique persons (clean name by removing PRET suffix)
+                persons = set()
+                for r in records:
+                    name = r['fields'][1].replace(' PRET', '').replace(' pret', '').strip().upper()
+                    persons.add(name)
+
+                if len(persons) >= 3:
+                    self.stats['matricules_collectif'].add(matricule)
+                    # Move from doublon_keep to collectif
+                    self.doublon_keep_records = [
+                        (ln, f) for ln, f in self.doublon_keep_records
+                        if f[3] != matricule
+                    ]
+                    self.doublon_purge_records = [
+                        (ln, f) for ln, f in self.doublon_purge_records
+                        if f[3] != matricule
+                    ]
+                    self.stats['doublon_keep_lines'] -= sum(1 for r in records if r['badge'] == matricule or (r['immatriculation'] and r['immatriculation'][2:] == r['badge']))
+                    self.stats['doublon_purge_lines'] -= sum(1 for r in records if r['badge'] != matricule and (not r['immatriculation'] or r['immatriculation'][2:] != r['badge']))
+
+                    # Add all to collectif
+                    for record in records:
+                        self.collectif_records.append((record['line_num'], record['fields']))
+                        self.stats['collectif_lines'] += 1
 
     def write_output_files(self):
         """Write the categorized records to output files."""
@@ -219,13 +297,29 @@ class BadgePurger:
                 writer.writerow(fields)
         print(f"[OK] Valid records: {valid_file}")
 
-        # Write duplicate records
-        duplicate_file = self.output_dir / 'badges_doublons.csv'
-        with open(duplicate_file, 'w', encoding='cp1252', newline='') as f:
+        # Write doublon keep records
+        doublon_keep_file = self.output_dir / 'badges_doublons_a_garder.csv'
+        with open(doublon_keep_file, 'w', encoding='cp1252', newline='') as f:
             writer = csv.writer(f, delimiter=';', lineterminator='\r\n')
-            for _, fields in sorted(self.duplicate_records):
+            for _, fields in sorted(self.doublon_keep_records):
                 writer.writerow(fields)
-        print(f"[OK] Duplicate records: {duplicate_file}")
+        print(f"[OK] Doublon keep: {doublon_keep_file}")
+
+        # Write doublon purge records
+        doublon_purge_file = self.output_dir / 'badges_doublons_a_purger.csv'
+        with open(doublon_purge_file, 'w', encoding='cp1252', newline='') as f:
+            writer = csv.writer(f, delimiter=';', lineterminator='\r\n')
+            for _, fields in sorted(self.doublon_purge_records):
+                writer.writerow(fields)
+        print(f"[OK] Doublon purge: {doublon_purge_file}")
+
+        # Write collectif records
+        collectif_file = self.output_dir / 'badges_matricule_collectif.csv'
+        with open(collectif_file, 'w', encoding='cp1252', newline='') as f:
+            writer = csv.writer(f, delimiter=';', lineterminator='\r\n')
+            for _, fields in sorted(self.collectif_records):
+                writer.writerow(fields)
+        print(f"[OK] Collective matricules: {collectif_file}")
 
         # Write no-matricule records
         no_matricule_file = self.output_dir / 'badges_sans_matricule.csv'
@@ -235,14 +329,13 @@ class BadgePurger:
                 writer.writerow(fields)
         print(f"[OK] No-matricule records: {no_matricule_file}")
 
-        # Write error records
+        # Write error records with type
         error_file = self.output_dir / 'badges_erreurs.csv'
         with open(error_file, 'w', encoding='cp1252', newline='') as f:
             writer = csv.writer(f, delimiter=';', lineterminator='\r\n')
-            # Write header with error message
-            f.write("# Ligne;N°Badge;Nom;Prenom;Matricule;Categorie;Immatriculation;N°Cat;ERREUR\r\n")
-            for line_num, fields, error_msg in sorted(self.error_records):
-                row = [str(line_num)] + fields + [error_msg]
+            f.write("# Ligne;N°Badge;Nom;Prenom;Matricule;Categorie;Immatriculation;N°Cat;TYPE_ERREUR;ERREUR\r\n")
+            for line_num, fields, error_msg, error_type in sorted(self.error_records):
+                row = [str(line_num)] + fields + [error_type, error_msg]
                 writer.writerow(row)
         print(f"[OK] Error records: {error_file}")
 
@@ -251,7 +344,7 @@ class BadgePurger:
         report_file = self.output_dir / 'rapport_purge.txt'
 
         with open(report_file, 'w', encoding='cp1252', newline='') as f:
-            f.write("RAPPORT DE PURGE DE BASE DE BADGES\r\n")
+            f.write("RAPPORT DE PURGE DE BASE DE BADGES - EDITION AVANCEE\r\n")
             f.write("=" * 70 + "\r\n\r\n")
 
             f.write(f"Date/Heure: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\r\n")
@@ -264,98 +357,54 @@ class BadgePurger:
             f.write(f"Lignes d'en-tete/separateurs ignorees: {self.stats['header_lines']:,}\r\n")
             f.write(f"Lignes traitees: {self.stats['total_lines'] - self.stats['header_lines']:,}\r\n\r\n")
 
-            f.write(f"Lignes valides (avec matricule, sans doublon): {self.stats['valid_lines']:,}\r\n")
-            f.write(f"Lignes en doublon (badge duplique): {self.stats['duplicate_lines']:,}\r\n")
+            f.write(f"Lignes valides (sans doublon, avec matricule): {self.stats['valid_lines']:,}\r\n")
+            f.write(f"Lignes doublons a GARDER (definitif+jumeau): {self.stats['doublon_keep_lines']:,}\r\n")
+            f.write(f"Lignes doublons a PURGER (exces): {self.stats['doublon_purge_lines']:,}\r\n")
+            f.write(f"Lignes matricule collectif (partage): {self.stats['collectif_lines']:,}\r\n")
             f.write(f"Lignes sans matricule (vehicules/partage): {self.stats['no_matricule_lines']:,}\r\n")
             f.write(f"Lignes en erreur: {self.stats['error_lines']:,}\r\n\r\n")
 
             f.write("RESUME\r\n")
             f.write("-" * 70 + "\r\n")
-            total_traites = self.stats['valid_lines'] + self.stats['duplicate_lines'] + self.stats['no_matricule_lines']
+            total_acceptables = (self.stats['valid_lines'] + self.stats['doublon_keep_lines'] +
+                                 self.stats['no_matricule_lines'])
             all_traites = self.stats['total_lines'] - self.stats['header_lines']
-            valid_percent = (self.stats['valid_lines'] / all_traites * 100) if all_traites > 0 else 0
-            f.write(f"Lignes acceptables (valides + sans matricule): {total_traites:,}\r\n")
+            valid_percent = (total_acceptables / all_traites * 100) if all_traites > 0 else 0
+
+            f.write(f"Lignes acceptables (valides + a garder + sans mat): {total_acceptables:,}\r\n")
+            f.write(f"Lignes a purger (doublons excess): {self.stats['doublon_purge_lines']:,}\r\n")
             f.write(f"Lignes avec erreurs: {self.stats['error_lines']:,}\r\n")
             f.write(f"Taux d'acceptabilite: {valid_percent:.2f}%\r\n\r\n")
 
-            if self.stats['duplicate_lines'] > 0:
-                f.write("DETAILS DES DOUBLONS (MATRICULE AVEC > 2 BADGES)\r\n")
-                f.write("-" * 70 + "\r\n")
+            f.write("DETAILS DES DOUBLONS\r\n")
+            f.write("-" * 70 + "\r\n")
+            f.write(f"Nombre de matricules en doublon: {len(self.stats['matricules_doublon']):,}\r\n")
+            f.write(f"  - Matricules collectifs (3+ personnes): {len(self.stats['matricules_collectif']):,}\r\n")
+            f.write(f"  - Matricules vrais doublons (meme personne): {len(self.stats['matricules_doublon']) - len(self.stats['matricules_collectif']):,}\r\n\r\n")
 
-                f.write(f"Nombre de matricules en doublon: {len(self.stats['duplicates_by_matricule']):,}\r\n")
-                f.write(f"Total de badges concernes: {self.stats['duplicate_lines']:,}\r\n\r\n")
+            f.write("ACTION RECOMMANDEE:\r\n")
+            f.write(f"  - CONSERVER: {self.stats['doublon_keep_lines']:,} badges (badges_doublons_a_garder.csv)\r\n")
+            f.write(f"  - PURGER: {self.stats['doublon_purge_lines']:,} badges (badges_doublons_a_purger.csv)\r\n")
+            f.write(f"  - REVISER: {self.stats['collectif_lines']:,} badges partages (badges_matricule_collectif.csv)\r\n\r\n")
 
-                # Distribution by badge count (triplon, quadruplon, ...)
-                count_distribution = defaultdict(int)
-                matricules_by_count = defaultdict(list)
-                for matricule, records in self.stats['duplicates_by_matricule'].items():
-                    nb_badges = len(set(r['badge'] for r in records))
-                    count_distribution[nb_badges] += 1
-                    matricules_by_count[nb_badges].append(matricule)
-
-                f.write("Repartition par nombre de badges:\r\n")
-                for nb_badges in sorted(count_distribution):
-                    label = {3: "triplon", 4: "quadruplon"}.get(nb_badges, f"{nb_badges} badges")
-                    count = count_distribution[nb_badges]
-                    f.write(f"  - {nb_badges} badges ({label}): {count} matricule(s)")
-
-                    # If rare (1 or 2 occurrences), show the matricule(s)
-                    if count <= 2:
-                        matricule_list = matricules_by_count[nb_badges]
-                        f.write(f" {{{', '.join(matricule_list)}}}")
-                    f.write("\r\n")
-                f.write("\r\n")
-
-                # List all duplicates by matricule
-                f.write("Matricules en doublon (detail):\r\n")
-                f.write("-" * 70 + "\r\n")
-                for matricule, records in sorted(self.stats['duplicates_by_matricule'].items()):
-                    nb_badges = len(set(r['badge'] for r in records))
-                    f.write(f"  Matricule {matricule}: {nb_badges} badges distincts\r\n")
-                    for record in sorted(records, key=lambda r: r['line_num']):
-                        fields = record['fields']
-                        immat = fields[5].strip() if len(fields) > 5 and fields[5] else ''
-                        immat_display = immat if immat else '<vide>'
-                        f.write(f"    Ligne {record['line_num']}: Badge {fields[0]}, {fields[1]} {fields[2]}, Immat={immat_display}\r\n")
-                f.write("\r\n")
-
-            if self.stats['no_matricule_lines'] > 0:
-                f.write("DETAILS DES BADGES SANS MATRICULE\r\n")
-                f.write("-" * 70 + "\r\n")
-                f.write(f"Total: {self.stats['no_matricule_lines']:,} badges\r\n")
-                f.write("(Vehicules de service, equipements partages, etc.)\r\n\r\n")
-
+            f.write("DETAILS DES ERREURS\r\n")
+            f.write("-" * 70 + "\r\n")
             if self.stats['error_lines'] > 0:
-                f.write("DETAILS DES ERREURS\r\n")
-                f.write("-" * 70 + "\r\n")
-                error_types = defaultdict(int)
-                for _, _, error_msg in self.error_records:
-                    # Extract first error type
-                    first_error = error_msg.split(';')[0] if error_msg else 'Unknown'
-                    error_types[first_error] += 1
-
                 f.write(f"Total d'erreurs detectees: {self.stats['error_lines']:,}\r\n\r\n")
                 f.write("Repartition par type d'erreur:\r\n")
-                for error_type, count in sorted(error_types.items(), key=lambda x: x[1], reverse=True):
+                for error_type, count in sorted(self.stats['error_types'].items(), key=lambda x: x[1], reverse=True):
                     percent = (count / self.stats['error_lines'] * 100) if self.stats['error_lines'] > 0 else 0
                     f.write(f"  - {error_type}: {count} ({percent:.1f}%)\r\n")
                 f.write("\r\n")
-
-                # List first 20 errors as examples
-                f.write("Exemples d'erreurs (20 premieres):\r\n")
-                f.write("-" * 70 + "\r\n")
-                for i, (line_num, fields, error_msg) in enumerate(sorted(self.error_records)[:20]):
-                    badge = fields[0] if len(fields) > 0 else 'N/A'
-                    nom = fields[1] if len(fields) > 1 else ''
-                    f.write(f"  Ligne {line_num} - Badge {badge} ({nom}): {error_msg}\r\n")
-                if len(self.error_records) > 20:
-                    f.write(f"  ... et {len(self.error_records) - 20} autres erreurs\r\n")
-                f.write("\r\n")
+            else:
+                f.write("Aucune erreur detectee.\r\n\r\n")
 
             f.write("FICHIERS GENERES\r\n")
             f.write("-" * 70 + "\r\n")
             f.write(f"[OK] badges_valides.csv ({self.stats['valid_lines']} lignes)\r\n")
-            f.write(f"[OK] badges_doublons.csv ({self.stats['duplicate_lines']} lignes)\r\n")
+            f.write(f"[OK] badges_doublons_a_garder.csv ({self.stats['doublon_keep_lines']} lignes)\r\n")
+            f.write(f"[OK] badges_doublons_a_purger.csv ({self.stats['doublon_purge_lines']} lignes)\r\n")
+            f.write(f"[OK] badges_matricule_collectif.csv ({self.stats['collectif_lines']} lignes)\r\n")
             f.write(f"[OK] badges_sans_matricule.csv ({self.stats['no_matricule_lines']} lignes)\r\n")
             f.write(f"[OK] badges_erreurs.csv ({self.stats['error_lines']} lignes)\r\n\r\n")
 
@@ -375,7 +424,9 @@ class BadgePurger:
             print("PURGE COMPLETEE")
             print("=" * 70)
             print(f"Lignes valides: {self.stats['valid_lines']:,}")
-            print(f"Doublons: {self.stats['duplicate_lines']:,}")
+            print(f"Doublons (garder): {self.stats['doublon_keep_lines']:,}")
+            print(f"Doublons (purger): {self.stats['doublon_purge_lines']:,}")
+            print(f"Matricule collectif: {self.stats['collectif_lines']:,}")
             print(f"Sans matricule: {self.stats['no_matricule_lines']:,}")
             print(f"Erreurs: {self.stats['error_lines']:,}")
 
